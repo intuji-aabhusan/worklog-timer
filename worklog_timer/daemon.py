@@ -1,5 +1,6 @@
 """Main daemon loop for worklog-timer."""
 
+import glob
 import logging
 import os
 import signal
@@ -11,6 +12,31 @@ from worklog_timer import notifier, popup, storage
 logger = logging.getLogger(__name__)
 
 running = True
+
+
+def _find_xauthority() -> str | None:
+    """Discover the X authority file for the current session.
+
+    On Wayland (GNOME/Mutter with Xwayland), the auth file lives at a
+    dynamic path like ``/run/user/UID/.mutter-Xwaylandauth.XXXX`` rather
+    than the traditional ``~/.Xauthority``.
+
+    Returns:
+        The path to the auth file, or None if none was found.
+    """
+    # 1. Check XDG_RUNTIME_DIR for Mutter Xwayland auth files
+    runtime_dir = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+    candidates = glob.glob(os.path.join(runtime_dir, '.mutter-Xwaylandauth.*'))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    # 2. Fallback to traditional ~/.Xauthority
+    xauth = os.path.expanduser('~/.Xauthority')
+    if os.path.exists(xauth):
+        return xauth
+
+    return None
 
 
 def _handle_signal(signum, frame):
@@ -106,15 +132,18 @@ def run_daemon(interval_minutes: int = 45, foreground: bool = False) -> None:
         os.dup2(log_fd.fileno(), sys.stdout.fileno())
         os.dup2(log_fd.fileno(), sys.stderr.fileno())
 
-        # Ensure DISPLAY is set for Tkinter
-        if 'DISPLAY' not in os.environ:
-            os.environ['DISPLAY'] = ':0'
 
-        # Ensure XAUTHORITY is set
-        if 'XAUTHORITY' not in os.environ:
-            xauth = os.path.expanduser('~/.Xauthority')
-            if os.path.exists(xauth):
-                os.environ['XAUTHORITY'] = xauth
+    # Ensure DISPLAY is set for Tkinter
+    if 'DISPLAY' not in os.environ:
+        os.environ['DISPLAY'] = ':0'
+
+    # Ensure XAUTHORITY is set – on Wayland (GNOME/Mutter) the auth file
+    # lives at a dynamic path like /run/user/UID/.mutter-Xwaylandauth.XXXX
+    # instead of ~/.Xauthority.  Discover it at runtime.
+    if 'XAUTHORITY' not in os.environ:
+        xauth = _find_xauthority()
+        if xauth:
+            os.environ['XAUTHORITY'] = xauth
 
     # Configure logging
     logging.basicConfig(

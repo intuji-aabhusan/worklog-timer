@@ -8,6 +8,7 @@ Type=simple
 ExecStart=/home/aabhusan/projects/worklog-timer/worklog start --foreground --interval 45
 Restart=on-failure
 RestartSec=10
+# Pass graphical session env vars if available; daemon discovers XAUTHORITY at runtime
 Environment=DISPLAY=:0
 
 [Install]
