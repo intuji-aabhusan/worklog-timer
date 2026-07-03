@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Worklog Timer CLI - Track your work activities from the command line."""
+
+import sys
+from pathlib import Path
+
+# Add project directory to sys.path so we can import worklog_timer modules
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import argparse
+import datetime
+
+from worklog_timer import storage
+from worklog_timer import daemon
+
+
+# ANSI color codes
+BOLD = "\033[1m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RESET = "\033[0m"
+
+
+def cmd_start(args):
+    """Handle the 'start' subcommand."""
+    running, pid = daemon.is_running()
+    if running:
+        print(f"⚠ Worklog timer is already running (PID: {pid}).")
+        sys.exit(1)
+
+    daemon.run_daemon(interval_minutes=args.interval, foreground=args.foreground)
+
+    if not args.foreground:
+        print(f"✓ Worklog timer started (interval: {args.interval}m)")
+
+
+def cmd_stop(args):
+    """Handle the 'stop' subcommand."""
+    if daemon.stop_daemon():
+        print("✓ Worklog timer stopped.")
+    else:
+        print("⚠ Worklog timer is not running.")
+
+
+def cmd_status(args):
+    """Handle the 'status' subcommand."""
+    running, pid = daemon.is_running()
+    config = storage.load_config()
+    interval = config.get("interval_minutes", 45)
+
+    if running:
+        print(f"● Worklog timer is running (PID: {pid}, interval: {interval}m)")
+    else:
+        print("○ Worklog timer is not running.")
+
+    # Show today's stats
+    entries = storage.read_entries()
+    if entries:
+        logged = sum(1 for e in entries if e.get("status") == "logged")
+        skipped = sum(1 for e in entries if e.get("status") == "skipped")
+        total = len(entries)
+        print(f"\nToday: {logged} logged, {skipped} skipped ({total} total)")
+    else:
+        print("\nToday: No entries yet.")
+
+
+def cmd_log(args):
+    """Handle the 'log' subcommand."""
+    now = storage.now_npt()
+    storage.append_entry(
+        interval_start=now,
+        interval_end=now,
+        description=args.description,
+        status="logged",
+        interval_minutes=0,
+    )
+    print(f"✓ Logged: {args.description}")
+
+
+def cmd_show(args):
+    """Handle the 'show' subcommand."""
+    if args.date:
+        try:
+            date = datetime.date.fromisoformat(args.date)
+        except ValueError:
+            print(f"⚠ Invalid date format: {args.date} (expected YYYY-MM-DD)")
+            sys.exit(1)
+    else:
+        date = storage.now_npt().date()
+
+    entries = storage.read_entries(date)
+
+    if not entries:
+        print(f"No entries for {date.isoformat()}.")
+        return
+
+    # Calculate column widths
+    time_windows = []
+    descriptions = []
+    statuses = []
+
+    for entry in entries:
+        start = datetime.datetime.fromisoformat(entry["interval_start"])
+        end = datetime.datetime.fromisoformat(entry["interval_end"])
+        time_window = f"{start.strftime('%H:%M')} → {end.strftime('%H:%M')}"
+        time_windows.append(time_window)
+        statuses.append(entry.get("status", ""))
+        descriptions.append(entry.get("description", ""))
+
+    # Column widths (minimum widths for headers)
+    tw_width = max(len("Time Window"), max(len(tw) for tw in time_windows))
+    st_width = max(len("Status"), max(len(s) for s in statuses))
+    desc_width = max(len("Description"), max(len(d) for d in descriptions)) if descriptions else len("Description")
+    # Cap description width for readability
+    desc_width = min(desc_width, 50)
+
+    # Print header
+    print(f"\n{BOLD}Worklog entries for {date.isoformat()}{RESET}\n")
+
+    # Top border
+    print(f"┌─{'─' * (tw_width + 2)}┬─{'─' * (st_width + 2)}┬─{'─' * (desc_width + 2)}┐")
+
+    # Header row
+    print(
+        f"│ {BOLD}{'Time Window':<{tw_width}}{RESET} "
+        f"│ {BOLD}{'Status':<{st_width}}{RESET} "
+        f"│ {BOLD}{'Description':<{desc_width}}{RESET} │"
+    )
+
+    # Header separator
+    print(f"├─{'─' * (tw_width + 2)}┼─{'─' * (st_width + 2)}┼─{'─' * (desc_width + 2)}┤")
+
+    # Data rows
+    for tw, status, desc in zip(time_windows, statuses, descriptions):
+        if status == "logged":
+            color = GREEN
+        elif status == "skipped":
+            color = YELLOW
+        else:
+            color = ""
+
+        # Truncate description if too long
+        if len(desc) > desc_width:
+            desc = desc[: desc_width - 1] + "…"
+
+        print(
+            f"│ {tw:<{tw_width}} "
+            f"│ {color}{status:<{st_width}}{RESET} "
+            f"│ {desc:<{desc_width}} │"
+        )
+
+    # Bottom border
+    print(f"└─{'─' * (tw_width + 2)}┴─{'─' * (st_width + 2)}┴─{'─' * (desc_width + 2)}┘")
+
+    # Summary
+    logged = sum(1 for s in statuses if s == "logged")
+    skipped = sum(1 for s in statuses if s == "skipped")
+    total = len(entries)
+    print(f"\nSummary: {GREEN}{logged} logged{RESET}, {YELLOW}{skipped} skipped{RESET} ({total} total)")
+
+
+def main():
+    """Main entry point for the worklog CLI."""
+    parser = argparse.ArgumentParser(
+        prog="worklog",
+        description="Worklog Timer - Track your work activities",
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # start
+    start_parser = subparsers.add_parser("start", help="Start the worklog timer")
+    start_parser.add_argument(
+        "--interval",
+        type=int,
+        default=45,
+        help="Prompt interval in minutes (default: 45)",
+    )
+    start_parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run in foreground instead of daemonizing",
+    )
+
+    # stop
+    subparsers.add_parser("stop", help="Stop the worklog timer")
+
+    # status
+    subparsers.add_parser("status", help="Show timer status and today's stats")
+
+    # log
+    log_parser = subparsers.add_parser("log", help="Manually log a work entry")
+    log_parser.add_argument(
+        "description",
+        help="Description of what you worked on",
+    )
+
+    # show
+    show_parser = subparsers.add_parser("show", help="Show worklog entries")
+    show_parser.add_argument(
+        "--date",
+        default=None,
+        help="Date to show entries for (YYYY-MM-DD, default: today)",
+    )
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # Dispatch to handler
+    handlers = {
+        "start": cmd_start,
+        "stop": cmd_stop,
+        "status": cmd_status,
+        "log": cmd_log,
+        "show": cmd_show,
+    }
+    handlers[args.command](args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(130)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)

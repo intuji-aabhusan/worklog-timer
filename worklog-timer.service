@@ -1,0 +1,14 @@
+[Unit]
+Description=Worklog Timer - Periodic work activity logger
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/aabhusan/projects/worklog-timer/worklog start --foreground --interval 45
+Restart=on-failure
+RestartSec=10
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target
