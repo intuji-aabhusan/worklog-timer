@@ -7,8 +7,11 @@ is a JSON object representing one worklog entry.
 
 import datetime
 import json
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Nepal Standard Time (UTC+05:45)
 NPT = datetime.timezone(datetime.timedelta(hours=5, minutes=45))
@@ -27,6 +30,10 @@ def get_timelogs_dir() -> Path:
     """
     timelogs_dir = Path.home() / ".timelogs"
     timelogs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        timelogs_dir.chmod(0o700)
+    except OSError:
+        pass
     return timelogs_dir
 
 
@@ -81,6 +88,8 @@ def append_entry(
     log_file = get_log_file(interval_end.astimezone(NPT).date())
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
     return entry
 
@@ -102,10 +111,13 @@ def read_entries(date: "datetime.date | None" = None) -> list:
 
     entries = []
     with open(log_file, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_num, line in enumerate(f, 1):
             line = line.strip()
             if line:
-                entries.append(json.loads(line))
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    logger.warning(f'Corrupt entry at {log_file}:{line_num}, skipping')
     return entries
 
 

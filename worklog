@@ -12,13 +12,17 @@ import datetime
 
 from worklog_timer import storage
 from worklog_timer import daemon
+from worklog_timer import __version__
 
 
-# ANSI color codes
-BOLD = "\033[1m"
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-RESET = "\033[0m"
+# ANSI color codes (only when outputting to a terminal)
+if sys.stdout.isatty():
+    BOLD = "\033[1m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RESET = "\033[0m"
+else:
+    BOLD = GREEN = YELLOW = RESET = ""
 
 
 def cmd_start(args):
@@ -75,6 +79,20 @@ def cmd_log(args):
         interval_minutes=0,
     )
     print(f"✓ Logged: {args.description}")
+
+
+def cmd_open(args):
+    """Handle the 'open' subcommand."""
+    running, pid = daemon.is_running()
+    if not running:
+        print("⚠ Worklog timer is not running. Start it with: worklog start")
+        sys.exit(1)
+
+    if daemon.trigger_open():
+        print(f"✓ Popup triggered (sent signal to PID {pid})")
+    else:
+        print("⚠ Failed to trigger popup.")
+        sys.exit(1)
 
 
 def cmd_show(args):
@@ -165,6 +183,7 @@ def main():
         prog="worklog",
         description="Worklog Timer - Track your work activities",
     )
+    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # start
@@ -194,6 +213,9 @@ def main():
         help="Description of what you worked on",
     )
 
+    # open
+    subparsers.add_parser("open", help="Open the worklog popup now (trigger manually)")
+
     # show
     show_parser = subparsers.add_parser("show", help="Show worklog entries")
     show_parser.add_argument(
@@ -214,6 +236,7 @@ def main():
         "stop": cmd_stop,
         "status": cmd_status,
         "log": cmd_log,
+        "open": cmd_open,
         "show": cmd_show,
     }
     handlers[args.command](args)

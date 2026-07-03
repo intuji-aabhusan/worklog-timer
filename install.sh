@@ -21,7 +21,8 @@ echo "✓ Symlinked worklog → ~/.local/bin/worklog"
 
 # 4. Install systemd service
 mkdir -p ~/.config/systemd/user
-cp "$SCRIPT_DIR/worklog-timer.service" ~/.config/systemd/user/
+sed "s|@WORKLOG_PATH@|${SCRIPT_DIR}|g" \
+    "$SCRIPT_DIR/worklog-timer.service" > ~/.config/systemd/user/worklog-timer.service
 systemctl --user daemon-reload
 echo "✓ Installed systemd service"
 

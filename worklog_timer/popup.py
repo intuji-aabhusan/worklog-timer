@@ -143,6 +143,8 @@ def show_popup(
     # ------------------------------------------------------------------
     def _submit(_event: "tk.Event | None" = None) -> None:
         desc = text_entry.get("1.0", tk.END).strip()
+        if not desc:
+            return  # Don't allow empty submissions
         result[0] = (desc, "logged")
         root.destroy()
 

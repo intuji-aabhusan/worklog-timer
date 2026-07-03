@@ -9,7 +9,8 @@ A lightweight daemon that prompts you every N minutes to describe what you've be
 - 🔔 **Desktop notifications** — `notify-send` + sound alert
 - ⏱️ **Auto-skip** — popup auto-dismisses after 2 minutes if no response
 - 📝 **JSONL storage** — one file per day in `~/.timelogs/`
-- 🖥️ **CLI** — `worklog start/stop/status/show/log` commands
+- 🖥️ **CLI** — `worklog start/stop/status/show/log/open` commands
+- 📲 **Click-to-open** — click the notification to open the popup immediately
 - ⚙️ **systemd service** — auto-starts on login
 
 ## Quick Start
@@ -36,6 +37,9 @@ worklog show --date 2026-07-01
 # Manually log something
 worklog log "Fixed authentication bug in the MCP integration"
 
+# Open the popup right now (without waiting for the timer)
+worklog open
+
 # Stop the timer
 worklog stop
 ```
@@ -47,6 +51,7 @@ worklog stop
 3. You type a brief description and click "✓ Log It" (or press Ctrl+Enter)
 4. The entry is saved to `~/.timelogs/YYYY-MM-DD.jsonl`
 5. If you don't respond within 2 minutes, it auto-skips and records a "skipped" entry
+6. You can click the notification or run `worklog open` to open the popup at any time
 
 ## Storage Format
 
