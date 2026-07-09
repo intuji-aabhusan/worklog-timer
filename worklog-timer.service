@@ -8,7 +8,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=@WORKLOG_PATH@/worklog start --foreground --interval 45 --anchor 08:45 --override 11:00=10:45 --override 14:45=14:55
+ExecStart=@WORKLOG_PATH@/worklog start --foreground --interval 45 --anchor 08:45 --override 14:45=14:55
 Restart=on-failure
 RestartSec=10
 

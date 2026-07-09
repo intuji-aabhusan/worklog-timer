@@ -250,15 +250,20 @@ def _run_loop(
 ) -> None:
     """Main loop: sleep until the next wall-clock slot (interruptible by
     SIGUSR1), then notify, show the popup, and save the entry."""
+    prompted = False
+
     while running:
         interval_start = storage.now_npt()
 
+        # The back-to-back guard only makes sense right after a prompt —
+        # applying it on the first iteration would make a daemon restart
+        # silently swallow a slot due within the next 5 minutes.
         target = next_slot(
             interval_start,
             interval_minutes,
             anchor_minutes,
             overrides=overrides,
-            min_gap_seconds=MIN_SLOT_GAP_SECONDS,
+            min_gap_seconds=MIN_SLOT_GAP_SECONDS if prompted else 0,
         )
         reason = _sleep_until(target)
         if reason == 'shutdown':
@@ -270,6 +275,7 @@ def _run_loop(
             interval_minutes,
             manual=(reason == 'manual'),
         )
+        prompted = True
 
 
 def run_daemon(
