@@ -4,7 +4,7 @@ A lightweight daemon that prompts you every N minutes to describe what you've be
 
 ## Features
 
-- 🕐 **Periodic check-ins** — configurable interval (default: 45 minutes)
+- 🕐 **Wall-clock check-ins** — popups land on a fixed grid (default: 8:45, 9:30, 10:15, …), configurable interval and anchor time; survives restarts and suspend/resume without drifting
 - 🎨 **Dark-themed popup** — Catppuccin Mocha–styled Tkinter dialog that stays on top and grabs focus
 - 🔔 **Desktop notifications** — `notify-send` + a soft synthesised chime (no harsh system sounds)
 - ⏱️ **Auto-skip** — popup auto-dismisses after 2 minutes; typing resets the countdown
@@ -28,6 +28,9 @@ worklog start
 # Start with custom interval
 worklog start --interval 30
 
+# Start with a custom anchor time (popups at 9:00, 9:45, 10:30, …)
+worklog start --anchor 09:00
+
 # Check status
 worklog status
 
@@ -49,15 +52,20 @@ worklog stop
 
 ## How It Works
 
-1. Every N minutes, the daemon sends a desktop notification and plays a gentle chime
-2. It re-discovers the graphical environment (`DISPLAY`, `XAUTHORITY`, …) at that moment —
+1. Prompts fire on a wall-clock grid: `anchor + k × interval` (default anchor 08:45,
+   interval 45m → 8:45, 9:30, 10:15, 11:00, …). The daemon sleeps until the next slot,
+   comparing against the clock so restarts and suspend/resume don't shift the schedule.
+   A slot landing within 5 minutes of the previous prompt (e.g. right after
+   `worklog open`) is skipped to avoid back-to-back popups.
+2. At each slot, the daemon sends a desktop notification and plays a gentle chime
+3. It re-discovers the graphical environment (`DISPLAY`, `XAUTHORITY`, …) at that moment —
    not at startup — so popups keep working across session restarts
-3. A dark-themed popup appears (in its own subprocess) asking "What did you do?"
-4. You type a brief description and press **Enter** (or click "✓ Log It")
-5. The entry is saved to `~/.timelogs/YYYY-MM-DD.jsonl`
-6. If you don't respond within 2 minutes, it auto-skips and records a "skipped" entry —
+4. A dark-themed popup appears (in its own subprocess) asking "What did you do?"
+5. You type a brief description and press **Enter** (or click "✓ Log It")
+6. The entry is saved to `~/.timelogs/YYYY-MM-DD.jsonl`
+7. If you don't respond within 2 minutes, it auto-skips and records a "skipped" entry —
    but typing resets the countdown, so it never closes mid-sentence
-7. You can click the notification or run `worklog open` to open the popup at any time
+8. You can click the notification or run `worklog open` to open the popup at any time
 
 ## Storage Format
 

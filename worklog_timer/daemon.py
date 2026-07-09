@@ -1,5 +1,6 @@
 """Main daemon loop for worklog-timer."""
 
+import datetime
 import logging
 import os
 import signal
@@ -15,8 +16,52 @@ POPUP_TIMEOUT_SECONDS = 120
 # Seconds to leave the notification up before showing the popup anyway.
 NOTIFY_GRACE_SECONDS = 10
 
+DEFAULT_ANCHOR = '08:45'
+
+# If the next wall-clock slot is closer than this to the previous prompt
+# (e.g. right after `worklog open`), skip ahead to the following slot so
+# two popups never appear back to back.
+MIN_SLOT_GAP_SECONDS = 300
+
 running = True
 trigger_popup = False
+
+
+def parse_anchor(anchor: str) -> int:
+    """Parse an ``HH:MM`` anchor time into minutes since midnight.
+
+    Raises:
+        ValueError: If the string is not a valid time of day.
+    """
+    parts = anchor.strip().split(':')
+    if len(parts) != 2:
+        raise ValueError(f'Invalid anchor time: {anchor!r} (expected HH:MM)')
+    hours, minutes = int(parts[0]), int(parts[1])
+    if not (0 <= hours < 24 and 0 <= minutes < 60):
+        raise ValueError(f'Invalid anchor time: {anchor!r} (expected HH:MM)')
+    return hours * 60 + minutes
+
+
+def next_slot(
+    now: datetime.datetime,
+    interval_minutes: int,
+    anchor_minutes: int,
+    min_gap_seconds: int = 0,
+) -> datetime.datetime:
+    """Return the next prompt time on the wall-clock grid.
+
+    Slots lie at ``anchor + k * interval`` for every integer k (the grid
+    extends across midnight in both directions), so with anchor 08:45 and
+    a 45-minute interval the prompts land at 8:45, 9:30, 10:15, …
+    regardless of when the daemon started.
+    """
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed = (now - midnight).total_seconds()
+    interval = interval_minutes * 60
+    wait = interval - ((elapsed - anchor_minutes * 60) % interval)
+    if wait < min_gap_seconds:
+        wait += interval
+    return now + datetime.timedelta(seconds=wait)
 
 
 def _handle_signal(signum, frame):
@@ -37,24 +82,29 @@ def _cleanup():
     storage.get_pid_file().unlink(missing_ok=True)
 
 
-def _sleep_interval(seconds: int) -> str:
-    """Sleep for *seconds*, waking every second to check for signals.
+def _sleep_until(target: datetime.datetime) -> str:
+    """Sleep until *target*, waking every second to check for signals.
+
+    Comparing against the wall clock (rather than counting seconds) means
+    a suspend/resume can't push the schedule late — the slot fires as
+    soon as the machine wakes past it.
 
     Returns:
-        'elapsed' when the full interval passed, 'manual' when SIGUSR1
+        'elapsed' when the target time was reached, 'manual' when SIGUSR1
         requested an immediate popup, or 'shutdown' when the daemon is
         stopping.
     """
     global trigger_popup
 
-    for _ in range(seconds):
+    while True:
         if not running:
             return 'shutdown'
         if trigger_popup:
             trigger_popup = False
             return 'manual'
+        if storage.now_npt() >= target:
+            return 'elapsed'
         time.sleep(1)
-    return 'elapsed'
 
 
 def _wait_for_notification_click(notify_proc) -> bool:
@@ -101,9 +151,16 @@ def _show_prompt(interval_start, interval_end, interval_minutes, manual=False):
 
     env = display.build_gui_env()
 
+    # Report the real elapsed window in the notification — with slot
+    # scheduling the first window after daemon start can be shorter than
+    # the configured interval.
+    elapsed_minutes = max(
+        1, round((interval_end - interval_start).total_seconds() / 60)
+    )
+
     opened_via_click = False
     if not manual:
-        notify_proc = notifier.notify_check_in(interval_minutes, env=env)
+        notify_proc = notifier.notify_check_in(elapsed_minutes, env=env)
         if notify_proc is not None:
             opened_via_click = _wait_for_notification_click(notify_proc)
 
@@ -141,13 +198,19 @@ def _show_prompt(interval_start, interval_end, interval_minutes, manual=False):
     )
 
 
-def _run_loop(interval_minutes: int) -> None:
-    """Main loop: sleep for the interval (interruptible by SIGUSR1),
-    then notify, show the popup, and save the entry."""
+def _run_loop(interval_minutes: int, anchor_minutes: int) -> None:
+    """Main loop: sleep until the next wall-clock slot (interruptible by
+    SIGUSR1), then notify, show the popup, and save the entry."""
     while running:
         interval_start = storage.now_npt()
 
-        reason = _sleep_interval(interval_minutes * 60)
+        target = next_slot(
+            interval_start,
+            interval_minutes,
+            anchor_minutes,
+            min_gap_seconds=MIN_SLOT_GAP_SECONDS,
+        )
+        reason = _sleep_until(target)
         if reason == 'shutdown':
             return
 
@@ -159,13 +222,20 @@ def _run_loop(interval_minutes: int) -> None:
         )
 
 
-def run_daemon(interval_minutes: int = 45, foreground: bool = False) -> None:
+def run_daemon(
+    interval_minutes: int = 45,
+    anchor: str = DEFAULT_ANCHOR,
+    foreground: bool = False,
+) -> None:
     """Main entry point for the daemon process.
 
     Args:
         interval_minutes: Minutes between check-in prompts.
+        anchor: HH:MM wall-clock time the prompt grid is anchored to.
         foreground: If True, run in foreground (for systemd). Otherwise daemonize.
     """
+    anchor_minutes = parse_anchor(anchor)  # validate before forking
+
     if not foreground:
         # --- Double-fork daemonization ---
         try:
@@ -217,15 +287,15 @@ def run_daemon(interval_minutes: int = 45, foreground: bool = False) -> None:
     signal.signal(signal.SIGUSR1, _handle_sigusr1)
 
     # Save config
-    storage.save_config(interval_minutes)
+    storage.save_config(interval_minutes, anchor)
 
     logger.info(
         f'Daemon started (PID {os.getpid()}, interval={interval_minutes}m, '
-        f'foreground={foreground})'
+        f'anchor={anchor}, foreground={foreground})'
     )
 
     try:
-        _run_loop(interval_minutes)
+        _run_loop(interval_minutes, anchor_minutes)
     finally:
         _cleanup()
         logger.info('Daemon stopped')

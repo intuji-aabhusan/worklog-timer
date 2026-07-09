@@ -32,10 +32,23 @@ def cmd_start(args):
         print(f"⚠ Worklog timer is already running (PID: {pid}).")
         sys.exit(1)
 
-    daemon.run_daemon(interval_minutes=args.interval, foreground=args.foreground)
+    try:
+        daemon.parse_anchor(args.anchor)
+    except ValueError as e:
+        print(f"⚠ {e}")
+        sys.exit(1)
+
+    daemon.run_daemon(
+        interval_minutes=args.interval,
+        anchor=args.anchor,
+        foreground=args.foreground,
+    )
 
     if not args.foreground:
-        print(f"✓ Worklog timer started (interval: {args.interval}m)")
+        print(
+            f"✓ Worklog timer started "
+            f"(interval: {args.interval}m, anchored at {args.anchor})"
+        )
 
 
 def cmd_stop(args):
@@ -51,9 +64,20 @@ def cmd_status(args):
     running, pid = daemon.is_running()
     config = storage.load_config()
     interval = config.get("interval_minutes", 45)
+    anchor = config.get("anchor", daemon.DEFAULT_ANCHOR)
 
     if running:
-        print(f"● Worklog timer is running (PID: {pid}, interval: {interval}m)")
+        print(
+            f"● Worklog timer is running "
+            f"(PID: {pid}, interval: {interval}m, anchored at {anchor})"
+        )
+        try:
+            upcoming = daemon.next_slot(
+                storage.now_npt(), interval, daemon.parse_anchor(anchor)
+            )
+            print(f"  Next popup: ~{upcoming.strftime('%H:%M')}")
+        except ValueError:
+            pass
     else:
         print("○ Worklog timer is not running.")
 
@@ -193,6 +217,14 @@ def main():
         type=int,
         default=45,
         help="Prompt interval in minutes (default: 45)",
+    )
+    start_parser.add_argument(
+        "--anchor",
+        default=daemon.DEFAULT_ANCHOR,
+        help=(
+            "Wall-clock time (HH:MM) the prompt grid is anchored to; "
+            "popups land at anchor, anchor+interval, … (default: 08:45)"
+        ),
     )
     start_parser.add_argument(
         "--foreground",

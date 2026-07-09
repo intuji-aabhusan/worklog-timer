@@ -139,13 +139,17 @@ def get_config_file() -> Path:
     return get_timelogs_dir() / ".config.json"
 
 
-def save_config(interval: int) -> None:
+DEFAULT_CONFIG = {"interval_minutes": 45, "anchor": "08:45"}
+
+
+def save_config(interval: int, anchor: str) -> None:
     """Save the timer configuration to the config JSON file.
 
     Args:
         interval: The interval length in minutes.
+        anchor: HH:MM wall-clock time the prompt grid is anchored to.
     """
-    config = {"interval_minutes": interval}
+    config = {"interval_minutes": interval, "anchor": anchor}
     config_file = get_config_file()
     with open(config_file, "w", encoding="utf-8") as f:
         json.dump(config, f)
@@ -154,18 +158,22 @@ def save_config(interval: int) -> None:
 def load_config() -> dict:
     """Load the timer configuration from the config JSON file.
 
-    If the config file does not exist or cannot be read, returns a default
-    configuration with interval_minutes set to 45.
+    Missing or unreadable files (and missing keys) fall back to the
+    defaults: 45-minute interval anchored at 08:45.
 
     Returns:
         dict: The configuration dictionary.
     """
     config_file = get_config_file()
+    config = dict(DEFAULT_CONFIG)
     if not config_file.exists():
-        return {"interval_minutes": 45}
+        return config
 
     try:
         with open(config_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            config.update(loaded)
     except (json.JSONDecodeError, OSError):
-        return {"interval_minutes": 45}
+        pass
+    return config
