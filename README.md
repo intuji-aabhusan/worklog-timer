@@ -5,13 +5,16 @@ A lightweight daemon that prompts you every N minutes to describe what you've be
 ## Features
 
 - 🕐 **Periodic check-ins** — configurable interval (default: 45 minutes)
-- 🎨 **Dark-themed popup** — Catppuccin Mocha–styled Tkinter dialog
-- 🔔 **Desktop notifications** — `notify-send` + sound alert
-- ⏱️ **Auto-skip** — popup auto-dismisses after 2 minutes if no response
+- 🎨 **Dark-themed popup** — Catppuccin Mocha–styled Tkinter dialog that stays on top and grabs focus
+- 🔔 **Desktop notifications** — `notify-send` + a soft synthesised chime (no harsh system sounds)
+- ⏱️ **Auto-skip** — popup auto-dismisses after 2 minutes; typing resets the countdown
 - 📝 **JSONL storage** — one file per day in `~/.timelogs/`
 - 🖥️ **CLI** — `worklog start/stop/status/show/log/open` commands
 - 📲 **Click-to-open** — click the notification to open the popup immediately
-- ⚙️ **systemd service** — auto-starts on login
+- ⚙️ **systemd service** — starts with the graphical session
+- 🛡️ **Crash-isolated popup** — the dialog runs in its own subprocess with a fresh
+  `DISPLAY`/`XAUTHORITY`, re-discovered before every prompt (survives Wayland
+  auth-file rotation and login races)
 
 ## Quick Start
 
@@ -46,12 +49,15 @@ worklog stop
 
 ## How It Works
 
-1. Every N minutes, the daemon sends a desktop notification and plays a sound
-2. A dark-themed popup appears asking "What did you do?"
-3. You type a brief description and click "✓ Log It" (or press Ctrl+Enter)
-4. The entry is saved to `~/.timelogs/YYYY-MM-DD.jsonl`
-5. If you don't respond within 2 minutes, it auto-skips and records a "skipped" entry
-6. You can click the notification or run `worklog open` to open the popup at any time
+1. Every N minutes, the daemon sends a desktop notification and plays a gentle chime
+2. It re-discovers the graphical environment (`DISPLAY`, `XAUTHORITY`, …) at that moment —
+   not at startup — so popups keep working across session restarts
+3. A dark-themed popup appears (in its own subprocess) asking "What did you do?"
+4. You type a brief description and press **Enter** (or click "✓ Log It")
+5. The entry is saved to `~/.timelogs/YYYY-MM-DD.jsonl`
+6. If you don't respond within 2 minutes, it auto-skips and records a "skipped" entry —
+   but typing resets the countdown, so it never closes mid-sentence
+7. You can click the notification or run `worklog open` to open the popup at any time
 
 ## Storage Format
 
@@ -65,11 +71,29 @@ Entries are stored as JSON Lines in `~/.timelogs/YYYY-MM-DD.jsonl`:
 
 | Key | Action |
 |---|---|
+| `Enter` | Submit entry |
+| `Shift+Enter` | New line |
 | `Ctrl+Enter` | Submit entry |
 | `Escape` | Skip |
 | Close window | Skip |
 
+## Notification Sound
+
+The alert is a soft three-note bell arpeggio (C5–E5–G5) synthesised once with the
+Python stdlib and cached at `~/.timelogs/.chime-v1.wav`, played via `pw-play`,
+`paplay`, or `aplay` — whichever is available. To preview it:
+
+```bash
+pw-play ~/.timelogs/.chime-v1.wav
+```
+
+Want a different sound? Delete the cached file and tweak the note/envelope
+parameters in `worklog_timer/notifier.py` (`_synthesize_chime`).
+
 ## systemd Service
+
+The service is bound to `graphical-session.target`, so it starts once the desktop
+is up and stops with it.
 
 ```bash
 # Start via systemd
@@ -85,12 +109,32 @@ systemctl --user stop worklog-timer
 journalctl --user -u worklog-timer
 ```
 
+## Troubleshooting
+
+**Popup never appears / entries are all "skipped"**
+Check the logs for display errors:
+
+```bash
+journalctl --user -u worklog-timer | grep -i -E 'popup|display'
+```
+
+The daemon re-discovers `DISPLAY`/`XAUTHORITY` before every popup, so a login
+race can no longer break it permanently. If popups still fail, test one directly:
+
+```bash
+python3 test_popup.py
+```
+
+**No sound**
+Verify a player exists (`pw-play`, `paplay`, or `aplay`) and that
+`~/.timelogs/.chime-v1.wav` exists (it is regenerated automatically if deleted).
+
 ## Dependencies
 
 - Python 3.10+ (stdlib only — no pip installs needed)
 - `tkinter` (usually bundled with Python)
 - `notify-send` (for desktop notifications)
-- `paplay` or `aplay` (for notification sound)
+- `pw-play`, `paplay`, or `aplay` (for the notification chime)
 
 ## Project Structure
 
@@ -99,11 +143,13 @@ worklog-timer/
 ├── worklog_timer/
 │   ├── __init__.py       # Package version
 │   ├── daemon.py         # Main daemon loop + daemonization
-│   ├── popup.py          # Dark-themed Tkinter popup
+│   ├── display.py        # Runtime discovery of DISPLAY/XAUTHORITY/etc.
+│   ├── popup.py          # Dark-themed Tkinter popup (runs as a subprocess)
 │   ├── storage.py        # JSONL read/write to ~/.timelogs/
-│   └── notifier.py       # Desktop notifications + sound
+│   └── notifier.py       # Desktop notifications + synthesised chime
 ├── worklog               # CLI entry point
 ├── worklog-timer.service # systemd user service
 ├── install.sh            # Installer script
+├── test_popup.py         # Manual popup smoke test
 └── README.md
 ```

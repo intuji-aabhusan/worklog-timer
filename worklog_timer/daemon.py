@@ -1,49 +1,29 @@
 """Main daemon loop for worklog-timer."""
 
-import glob
 import logging
 import os
 import signal
 import sys
 import time
 
-from worklog_timer import notifier, popup, storage
+from worklog_timer import display, notifier, popup, storage
 
 logger = logging.getLogger(__name__)
+
+POPUP_TIMEOUT_SECONDS = 120
+
+# Seconds to leave the notification up before showing the popup anyway.
+NOTIFY_GRACE_SECONDS = 10
 
 running = True
 trigger_popup = False
 
 
-def _find_xauthority() -> str | None:
-    """Discover the X authority file for the current session.
-
-    On Wayland (GNOME/Mutter with Xwayland), the auth file lives at a
-    dynamic path like ``/run/user/UID/.mutter-Xwaylandauth.XXXX`` rather
-    than the traditional ``~/.Xauthority``.
-
-    Returns:
-        The path to the auth file, or None if none was found.
-    """
-    # 1. Check XDG_RUNTIME_DIR for Mutter Xwayland auth files
-    runtime_dir = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
-    candidates = glob.glob(os.path.join(runtime_dir, '.mutter-Xwaylandauth.*'))
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
-
-    # 2. Fallback to traditional ~/.Xauthority
-    xauth = os.path.expanduser('~/.Xauthority')
-    if os.path.exists(xauth):
-        return xauth
-
-    return None
-
-
 def _handle_signal(signum, frame):
-    """Handle SIGTERM/SIGINT by setting the running flag to False."""
+    """Handle SIGTERM/SIGINT: stop the loop and close any open popup."""
     global running
     running = False
+    popup.terminate_active()
 
 
 def _handle_sigusr1(signum, frame):
@@ -54,30 +34,97 @@ def _handle_sigusr1(signum, frame):
 
 def _cleanup():
     """Remove the PID file if it exists."""
-    pid_file = storage.get_pid_file()
-    if pid_file.exists():
-        pid_file.unlink()
+    storage.get_pid_file().unlink(missing_ok=True)
 
 
-def _show_prompt(interval_start, interval_end, interval_minutes):
-    """Send notification, show popup, save entry.
+def _sleep_interval(seconds: int) -> str:
+    """Sleep for *seconds*, waking every second to check for signals.
 
-    This is the core prompt logic extracted so it can be called both from
-    the regular timer loop and from the manual SIGUSR1 trigger.
+    Returns:
+        'elapsed' when the full interval passed, 'manual' when SIGUSR1
+        requested an immediate popup, or 'shutdown' when the daemon is
+        stopping.
     """
-    # Send notification + sound, get Popen handle for action monitoring
-    notifier.notify_check_in(interval_minutes)
+    global trigger_popup
 
-    # Show popup
+    for _ in range(seconds):
+        if not running:
+            return 'shutdown'
+        if trigger_popup:
+            trigger_popup = False
+            return 'manual'
+        time.sleep(1)
+    return 'elapsed'
+
+
+def _wait_for_notification_click(notify_proc) -> bool:
+    """Give the user a short grace period to click the notification.
+
+    Returns True if the "Open" action was clicked, False otherwise.
+    Always leaves *notify_proc* terminated/reaped.
+    """
+    global trigger_popup
+
+    clicked = False
+    try:
+        for _ in range(NOTIFY_GRACE_SECONDS):
+            if not running or trigger_popup:
+                break
+            if notify_proc.poll() is not None:
+                try:
+                    stdout = notify_proc.stdout.read().decode().strip()
+                except Exception:
+                    stdout = ''
+                clicked = stdout == 'open'
+                break
+            time.sleep(1)
+    finally:
+        if notify_proc.poll() is None:
+            notify_proc.terminate()
+        try:
+            notify_proc.stdout.close()
+        except Exception:
+            pass
+
+    return clicked
+
+
+def _show_prompt(interval_start, interval_end, interval_minutes, manual=False):
+    """Notify, show the popup, and save the resulting entry.
+
+    The graphical environment (DISPLAY/XAUTHORITY/…) is re-discovered on
+    every call: the daemon usually starts at login before the session is
+    fully up, and the Xwayland auth file rotates per session, so values
+    captured at startup go stale.
+    """
+    global trigger_popup
+
+    env = display.build_gui_env()
+
+    opened_via_click = False
+    if not manual:
+        notify_proc = notifier.notify_check_in(interval_minutes, env=env)
+        if notify_proc is not None:
+            opened_via_click = _wait_for_notification_click(notify_proc)
+
+    if not running:
+        return
+
     try:
         description, status = popup.show_popup(
-            interval_start, interval_end, timeout_seconds=120
+            interval_start,
+            interval_end,
+            timeout_seconds=POPUP_TIMEOUT_SECONDS,
+            env=env,
         )
     except Exception:
         logger.warning('Popup failed', exc_info=True)
         description, status = '', 'skipped'
 
-    # Save entry
+    # Swallow any SIGUSR1 that arrived while the popup was already open,
+    # so `worklog open` during a popup doesn't queue a second one.
+    trigger_popup = False
+
     storage.append_entry(
         interval_start=interval_start,
         interval_end=interval_end,
@@ -86,130 +133,29 @@ def _show_prompt(interval_start, interval_end, interval_minutes):
         interval_minutes=interval_minutes,
     )
 
+    src = '(manual)' if manual else '(click)' if opened_via_click else ''
     logger.info(
         f'[{status}] {interval_start.strftime("%H:%M")}–'
-        f'{interval_end.strftime("%H:%M")}: {description or "(skipped)"}'
+        f'{interval_end.strftime("%H:%M")}: '
+        f'{description or "(skipped)"} {src}'.rstrip()
     )
+
+
 def _run_loop(interval_minutes: int) -> None:
-    """Main loop: sleep, notify, show popup, save entry.
-
-    Flow per iteration:
-    1. Sleep for *interval_minutes* (interruptible by SIGUSR1).
-    2. Send a desktop notification with an "Open" action button.
-    3. Wait a short grace period (10 s) for the user to click the
-       notification.  If they click → open popup.  If not → open
-       popup anyway (original behaviour).
-
-    SIGUSR1 (``worklog open``) can interrupt the sleep at any time
-    and immediately show the popup.
-    """
-    global running, trigger_popup
-
+    """Main loop: sleep for the interval (interruptible by SIGUSR1),
+    then notify, show the popup, and save the entry."""
     while running:
         interval_start = storage.now_npt()
 
-        # --- Phase 1: Sleep for the configured interval ---------------
-        # Check every second for shutdown or manual trigger.
-        interrupted = False
-        for _ in range(interval_minutes * 60):
-            if not running:
-                return
+        reason = _sleep_interval(interval_minutes * 60)
+        if reason == 'shutdown':
+            return
 
-            if trigger_popup:
-                trigger_popup = False
-                now = storage.now_npt()
-                try:
-                    description, status = popup.show_popup(
-                        interval_start, now, timeout_seconds=120
-                    )
-                except Exception:
-                    logger.warning('Popup failed', exc_info=True)
-                    description, status = '', 'skipped'
-                storage.append_entry(
-                    interval_start=interval_start,
-                    interval_end=now,
-                    description=description,
-                    status=status,
-                    interval_minutes=interval_minutes,
-                )
-                logger.info(
-                    f'[{status}] {interval_start.strftime("%H:%M")}–'
-                    f'{now.strftime("%H:%M")}: {description or "(manual)"}'
-                )
-                interrupted = True
-                break
-
-            time.sleep(1)
-
-        if interrupted:
-            continue
-
-        interval_end = storage.now_npt()
-
-        # --- Phase 2: Send notification + sound ----------------------
-        notify_proc = notifier.notify_check_in(interval_minutes)
-
-        # --- Phase 3: Grace period — wait for notification click ------
-        # Give the user up to 10 seconds to click the notification
-        # before we show the popup ourselves.
-        opened_via_click = False
-        if notify_proc is not None:
-            for _ in range(10):
-                if not running:
-                    notify_proc.terminate()
-                    return
-
-                # SIGUSR1 during grace period
-                if trigger_popup:
-                    trigger_popup = False
-                    notify_proc.terminate()
-                    break
-
-                if notify_proc.poll() is not None:
-                    # notify-send exited — read which action was clicked
-                    try:
-                        stdout = notify_proc.stdout.read().decode().strip()
-                        notify_proc.stdout.close()
-                    except Exception:
-                        stdout = ''
-
-                    if stdout == 'open':
-                        opened_via_click = True
-                    break
-
-                time.sleep(1)
-            else:
-                # Grace period expired — kill the notification process
-                if notify_proc.poll() is None:
-                    notify_proc.terminate()
-                    try:
-                        notify_proc.stdout.close()
-                    except Exception:
-                        pass
-
-        # --- Phase 4: Show the popup ----------------------------------
-        # Whether the user clicked or not, show the popup now.
-        try:
-            description, status = popup.show_popup(
-                interval_start, interval_end, timeout_seconds=120
-            )
-        except Exception:
-            logger.warning('Popup failed', exc_info=True)
-            description, status = '', 'skipped'
-
-        storage.append_entry(
-            interval_start=interval_start,
-            interval_end=interval_end,
-            description=description,
-            status=status,
-            interval_minutes=interval_minutes,
-        )
-
-        src = '(click)' if opened_via_click else ''
-        logger.info(
-            f'[{status}] {interval_start.strftime("%H:%M")}–'
-            f'{interval_end.strftime("%H:%M")}: '
-            f'{description or "(skipped)"} {src}'
+        _show_prompt(
+            interval_start,
+            storage.now_npt(),
+            interval_minutes,
+            manual=(reason == 'manual'),
         )
 
 
@@ -222,7 +168,6 @@ def run_daemon(interval_minutes: int = 45, foreground: bool = False) -> None:
     """
     if not foreground:
         # --- Double-fork daemonization ---
-        # First fork
         try:
             pid = os.fork()
             if pid > 0:
@@ -234,7 +179,6 @@ def run_daemon(interval_minutes: int = 45, foreground: bool = False) -> None:
         os.setsid()
         os.umask(0o022)
 
-        # Second fork
         try:
             pid = os.fork()
             if pid > 0:
@@ -255,19 +199,6 @@ def run_daemon(interval_minutes: int = 45, foreground: bool = False) -> None:
         os.dup2(log_fd, sys.stdout.fileno())
         os.dup2(log_fd, sys.stderr.fileno())
         os.close(log_fd)
-
-
-    # Ensure DISPLAY is set for Tkinter
-    if 'DISPLAY' not in os.environ:
-        os.environ['DISPLAY'] = ':0'
-
-    # Ensure XAUTHORITY is set – on Wayland (GNOME/Mutter) the auth file
-    # lives at a dynamic path like /run/user/UID/.mutter-Xwaylandauth.XXXX
-    # instead of ~/.Xauthority.  Discover it at runtime.
-    if 'XAUTHORITY' not in os.environ:
-        xauth = _find_xauthority()
-        if xauth:
-            os.environ['XAUTHORITY'] = xauth
 
     # Configure logging
     logging.basicConfig(
@@ -395,4 +326,3 @@ def is_running() -> tuple[bool, int | None]:
     except PermissionError:
         # Process exists but we can't signal it — assume running
         return (True, pid)
-

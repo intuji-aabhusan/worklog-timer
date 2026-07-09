@@ -21,6 +21,9 @@ echo "✓ Symlinked worklog → ~/.local/bin/worklog"
 
 # 4. Install systemd service
 mkdir -p ~/.config/systemd/user
+# Disable first to clean up install symlinks from older versions that
+# used a different WantedBy target.
+systemctl --user disable worklog-timer.service >/dev/null 2>&1 || true
 sed "s|@WORKLOG_PATH@|${SCRIPT_DIR}|g" \
     "$SCRIPT_DIR/worklog-timer.service" > ~/.config/systemd/user/worklog-timer.service
 systemctl --user daemon-reload
@@ -29,6 +32,12 @@ echo "✓ Installed systemd service"
 # 5. Enable service (but don't start yet)
 systemctl --user enable worklog-timer.service
 echo "✓ Enabled worklog-timer.service (will auto-start on login)"
+
+# 6. Restart the service if it is already running so it picks up new code
+if systemctl --user is-active --quiet worklog-timer.service; then
+    systemctl --user restart worklog-timer.service
+    echo "✓ Restarted running worklog-timer.service"
+fi
 
 echo ""
 echo "=== Installation Complete ==="

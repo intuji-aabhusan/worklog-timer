@@ -1,5 +1,8 @@
 [Unit]
 Description=Worklog Timer - Periodic work activity logger
+# Bind to the graphical session so the daemon starts only once the
+# desktop is up and stops with it. DISPLAY/XAUTHORITY are re-discovered
+# at runtime before every popup, so no Environment= lines are needed.
 After=graphical-session.target
 PartOf=graphical-session.target
 
@@ -8,8 +11,6 @@ Type=simple
 ExecStart=@WORKLOG_PATH@/worklog start --foreground --interval 45
 Restart=on-failure
 RestartSec=10
-# Pass graphical session env vars if available; daemon discovers XAUTHORITY at runtime
-Environment=DISPLAY=:0
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
