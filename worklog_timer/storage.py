@@ -139,17 +139,22 @@ def get_config_file() -> Path:
     return get_timelogs_dir() / ".config.json"
 
 
-DEFAULT_CONFIG = {"interval_minutes": 45, "anchor": "08:45"}
+DEFAULT_CONFIG = {"interval_minutes": 45, "anchor": "08:45", "overrides": []}
 
 
-def save_config(interval: int, anchor: str) -> None:
+def save_config(interval: int, anchor: str, overrides: "list[str] | None" = None) -> None:
     """Save the timer configuration to the config JSON file.
 
     Args:
         interval: The interval length in minutes.
         anchor: HH:MM wall-clock time the prompt grid is anchored to.
+        overrides: SLOT=TIME specs moving individual grid slots.
     """
-    config = {"interval_minutes": interval, "anchor": anchor}
+    config = {
+        "interval_minutes": interval,
+        "anchor": anchor,
+        "overrides": list(overrides or []),
+    }
     config_file = get_config_file()
     with open(config_file, "w", encoding="utf-8") as f:
         json.dump(config, f)

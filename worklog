@@ -33,7 +33,8 @@ def cmd_start(args):
         sys.exit(1)
 
     try:
-        daemon.parse_anchor(args.anchor)
+        anchor_minutes = daemon.parse_anchor(args.anchor)
+        daemon.parse_overrides(args.overrides, args.interval, anchor_minutes)
     except ValueError as e:
         print(f"⚠ {e}")
         sys.exit(1)
@@ -41,13 +42,15 @@ def cmd_start(args):
     daemon.run_daemon(
         interval_minutes=args.interval,
         anchor=args.anchor,
+        overrides=args.overrides,
         foreground=args.foreground,
     )
 
     if not args.foreground:
+        extras = f", overrides: {', '.join(args.overrides)}" if args.overrides else ""
         print(
             f"✓ Worklog timer started "
-            f"(interval: {args.interval}m, anchored at {args.anchor})"
+            f"(interval: {args.interval}m, anchored at {args.anchor}{extras})"
         )
 
 
@@ -66,14 +69,21 @@ def cmd_status(args):
     interval = config.get("interval_minutes", 45)
     anchor = config.get("anchor", daemon.DEFAULT_ANCHOR)
 
+    overrides = config.get("overrides") or []
+
     if running:
+        extras = f", overrides: {', '.join(overrides)}" if overrides else ""
         print(
             f"● Worklog timer is running "
-            f"(PID: {pid}, interval: {interval}m, anchored at {anchor})"
+            f"(PID: {pid}, interval: {interval}m, anchored at {anchor}{extras})"
         )
         try:
+            anchor_minutes = daemon.parse_anchor(anchor)
             upcoming = daemon.next_slot(
-                storage.now_npt(), interval, daemon.parse_anchor(anchor)
+                storage.now_npt(),
+                interval,
+                anchor_minutes,
+                overrides=daemon.parse_overrides(overrides, interval, anchor_minutes),
             )
             print(f"  Next popup: ~{upcoming.strftime('%H:%M')}")
         except ValueError:
@@ -224,6 +234,17 @@ def main():
         help=(
             "Wall-clock time (HH:MM) the prompt grid is anchored to; "
             "popups land at anchor, anchor+interval, … (default: 08:45)"
+        ),
+    )
+    start_parser.add_argument(
+        "--override",
+        action="append",
+        dest="overrides",
+        metavar="SLOT=TIME",
+        default=None,
+        help=(
+            "Move one grid slot to a custom time, e.g. --override 11:00=10:45. "
+            "Repeatable."
         ),
     )
     start_parser.add_argument(

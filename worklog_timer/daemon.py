@@ -42,10 +42,44 @@ def parse_anchor(anchor: str) -> int:
     return hours * 60 + minutes
 
 
+def parse_overrides(
+    specs: 'list[str] | None',
+    interval_minutes: int,
+    anchor_minutes: int,
+) -> dict[int, int]:
+    """Parse ``SLOT=TIME`` override specs into a minutes→minutes mapping.
+
+    Each spec moves one grid slot to a custom wall-clock time, e.g.
+    ``11:00=10:45``.  The left side must be a time that actually lies on
+    the prompt grid; the right side can be any time of day.
+
+    Raises:
+        ValueError: On malformed specs or a left side not on the grid.
+    """
+    overrides: dict[int, int] = {}
+    for spec in specs or []:
+        slot_str, sep, repl_str = spec.partition('=')
+        if not sep:
+            raise ValueError(f'Invalid override: {spec!r} (expected SLOT=TIME)')
+        slot_m = parse_anchor(slot_str)
+        repl_m = parse_anchor(repl_str)
+        if (slot_m - anchor_minutes) % interval_minutes != 0:
+            before = slot_m - ((slot_m - anchor_minutes) % interval_minutes)
+            after = before + interval_minutes
+            raise ValueError(
+                f'{slot_str.strip()} is not on the prompt grid '
+                f'(nearest slots: {before // 60:02d}:{before % 60:02d} and '
+                f'{after % 1440 // 60:02d}:{after % 60:02d})'
+            )
+        overrides[slot_m] = repl_m
+    return overrides
+
+
 def next_slot(
     now: datetime.datetime,
     interval_minutes: int,
     anchor_minutes: int,
+    overrides: 'dict[int, int] | None' = None,
     min_gap_seconds: int = 0,
 ) -> datetime.datetime:
     """Return the next prompt time on the wall-clock grid.
@@ -53,15 +87,26 @@ def next_slot(
     Slots lie at ``anchor + k * interval`` for every integer k (the grid
     extends across midnight in both directions), so with anchor 08:45 and
     a 45-minute interval the prompts land at 8:45, 9:30, 10:15, …
-    regardless of when the daemon started.
+    regardless of when the daemon started.  *overrides* moves individual
+    grid slots to custom times (minutes-since-midnight → replacement).
     """
+    overrides = overrides or {}
+    first = anchor_minutes % interval_minutes
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elapsed = (now - midnight).total_seconds()
-    interval = interval_minutes * 60
-    wait = interval - ((elapsed - anchor_minutes * 60) % interval)
-    if wait < min_gap_seconds:
-        wait += interval
-    return now + datetime.timedelta(seconds=wait)
+
+    candidates = []
+    for day_offset in (0, 1):
+        day_start = midnight + datetime.timedelta(days=day_offset)
+        for m in range(first, 24 * 60, interval_minutes):
+            slot_m = overrides.get(m, m)
+            candidates.append(day_start + datetime.timedelta(minutes=slot_m))
+    candidates.sort()
+
+    threshold = now + datetime.timedelta(seconds=min_gap_seconds)
+    for candidate in candidates:
+        if candidate > now and candidate >= threshold:
+            return candidate
+    raise RuntimeError('No upcoming slot found')  # unreachable: tomorrow always has slots
 
 
 def _handle_signal(signum, frame):
@@ -198,7 +243,11 @@ def _show_prompt(interval_start, interval_end, interval_minutes, manual=False):
     )
 
 
-def _run_loop(interval_minutes: int, anchor_minutes: int) -> None:
+def _run_loop(
+    interval_minutes: int,
+    anchor_minutes: int,
+    overrides: dict[int, int],
+) -> None:
     """Main loop: sleep until the next wall-clock slot (interruptible by
     SIGUSR1), then notify, show the popup, and save the entry."""
     while running:
@@ -208,6 +257,7 @@ def _run_loop(interval_minutes: int, anchor_minutes: int) -> None:
             interval_start,
             interval_minutes,
             anchor_minutes,
+            overrides=overrides,
             min_gap_seconds=MIN_SLOT_GAP_SECONDS,
         )
         reason = _sleep_until(target)
@@ -225,6 +275,7 @@ def _run_loop(interval_minutes: int, anchor_minutes: int) -> None:
 def run_daemon(
     interval_minutes: int = 45,
     anchor: str = DEFAULT_ANCHOR,
+    overrides: 'list[str] | None' = None,
     foreground: bool = False,
 ) -> None:
     """Main entry point for the daemon process.
@@ -232,9 +283,12 @@ def run_daemon(
     Args:
         interval_minutes: Minutes between check-in prompts.
         anchor: HH:MM wall-clock time the prompt grid is anchored to.
+        overrides: SLOT=TIME specs moving individual grid slots.
         foreground: If True, run in foreground (for systemd). Otherwise daemonize.
     """
-    anchor_minutes = parse_anchor(anchor)  # validate before forking
+    # Validate before forking so bad args fail loudly in the caller's terminal
+    anchor_minutes = parse_anchor(anchor)
+    override_map = parse_overrides(overrides, interval_minutes, anchor_minutes)
 
     if not foreground:
         # --- Double-fork daemonization ---
@@ -287,15 +341,15 @@ def run_daemon(
     signal.signal(signal.SIGUSR1, _handle_sigusr1)
 
     # Save config
-    storage.save_config(interval_minutes, anchor)
+    storage.save_config(interval_minutes, anchor, overrides)
 
     logger.info(
         f'Daemon started (PID {os.getpid()}, interval={interval_minutes}m, '
-        f'anchor={anchor}, foreground={foreground})'
+        f'anchor={anchor}, overrides={overrides or []}, foreground={foreground})'
     )
 
     try:
-        _run_loop(interval_minutes, anchor_minutes)
+        _run_loop(interval_minutes, anchor_minutes, override_map)
     finally:
         _cleanup()
         logger.info('Daemon stopped')

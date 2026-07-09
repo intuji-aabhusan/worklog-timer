@@ -31,6 +31,9 @@ worklog start --interval 30
 # Start with a custom anchor time (popups at 9:00, 9:45, 10:30, …)
 worklog start --anchor 09:00
 
+# Move individual slots to custom times (repeatable)
+worklog start --override 11:00=10:45 --override 14:45=14:55
+
 # Check status
 worklog status
 
@@ -56,7 +59,8 @@ worklog stop
    interval 45m → 8:45, 9:30, 10:15, 11:00, …). The daemon sleeps until the next slot,
    comparing against the clock so restarts and suspend/resume don't shift the schedule.
    A slot landing within 5 minutes of the previous prompt (e.g. right after
-   `worklog open`) is skipped to avoid back-to-back popups.
+   `worklog open`) is skipped to avoid back-to-back popups. Individual slots can
+   be moved to custom times with `--override SLOT=TIME`.
 2. At each slot, the daemon sends a desktop notification and plays a gentle chime
 3. It re-discovers the graphical environment (`DISPLAY`, `XAUTHORITY`, …) at that moment —
    not at startup — so popups keep working across session restarts
