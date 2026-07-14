@@ -6,6 +6,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "=== Worklog Timer Installer ==="
 echo ""
 
+# 0. Check that the popup dialog can actually run (requires tkinter)
+if ! python3 -c 'import tkinter' >/dev/null 2>&1; then
+    echo "✗ python3 has no tkinter module — the worklog popup cannot open."
+    echo "  Install it first, then re-run this installer:"
+    echo ""
+    echo "    sudo apt install -y python3-tk"
+    echo ""
+    exit 1
+fi
+echo "✓ tkinter available"
+
 # 1. Create timelogs directory
 mkdir -p ~/.timelogs
 echo "✓ Created ~/.timelogs/"
